@@ -1,0 +1,14 @@
+# Web Server (FastAPI)
+fastapi
+uvicorn[standard]
+pydantic
+
+# AI & LLM 
+langchain
+langchain-openai
+openai
+tiktoken
+
+# Sandbox Management (Docker SDK)
+docker
+
