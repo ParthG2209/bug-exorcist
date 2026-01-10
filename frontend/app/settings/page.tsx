@@ -13,8 +13,13 @@ export default function SettingsPage() {
   }, []);
 
   const saveSettings = () => {
+    if (!openaiKey.trim() || !githubRepo.trim()) {
+      alert("Please fill in both the OpenAI API Key and GitHub Repository URL.");
+      return;
+    }
     localStorage.setItem("openai_api_key", openaiKey);
     localStorage.setItem("github_repo_url", githubRepo);
+    alert("Settings saved successfully!");
   };
 
   return (
