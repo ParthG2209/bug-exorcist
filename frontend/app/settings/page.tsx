@@ -4,10 +4,12 @@
 import { useEffect, useState } from "react";
 
 export default function SettingsPage() {
+  const [mounted, setMounted] = useState(false);
   const [openaiKey, setOpenaiKey] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
 
   useEffect(() => {
+    setMounted(true);
     setOpenaiKey(localStorage.getItem("openai_api_key") || "");
     setGithubRepo(localStorage.getItem("github_repo_url") || "");
   }, []);
@@ -16,6 +18,10 @@ export default function SettingsPage() {
     localStorage.setItem("openai_api_key", openaiKey);
     localStorage.setItem("github_repo_url", githubRepo);
   };
+
+  if (!mounted) {
+    return null;
+  }
 
   return (
     <div style={{ padding: "2rem" }}>
@@ -40,7 +46,7 @@ export default function SettingsPage() {
           onChange={(e) => setGithubRepo(e.target.value)}
         />
       </div>
-    
+
       <button style={{ marginTop: "1.5rem" }} onClick={saveSettings}>
         Save
       </button>

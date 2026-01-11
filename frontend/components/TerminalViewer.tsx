@@ -32,45 +32,7 @@ export default function TerminalViewer({ logs = [] }: TerminalViewerProps) {
     const currentLogs = logs.length > 0 ? logs : demoLogs;
 
     return (
-        <div className="min-h-screen bg-black text-[#38ff14] font-mono overflow-hidden relative selection:bg-[#38ff14] selection:text-black">
-            {/* External Resources */}
-            <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono&display=swap" rel="stylesheet" />
-            <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
-
-            {/* Internal Styles for Custom Effects */}
-            <style>{`
-        .font-display { font-family: 'Space Grotesk', sans-serif; }
-        .font-mono { font-family: 'Space Mono', monospace; }
-        
-        .crt-overlay {
-            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
-            background-size: 100% 3px, 3px 100%;
-        }
-        
-        .neon-glow {
-            text-shadow: 0 0 5px rgba(56, 255, 20, 0.5), 0 0 10px rgba(56, 255, 20, 0.3);
-        }
-
-        .terminal-scroll::-webkit-scrollbar {
-            width: 6px;
-        }
-        .terminal-scroll::-webkit-scrollbar-track {
-            background: #000000;
-        }
-        .terminal-scroll::-webkit-scrollbar-thumb {
-            background: #1a3a14;
-            border-radius: 3px;
-        }
-
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0; }
-        }
-        .cursor {
-            animation: blink 1s step-end infinite;
-            box-shadow: 0 0 8px #38ff14;
-        }
-      `}</style>
+        <div className="min-h-screen bg-black text-[#38ff14] font-mono relative selection:bg-[#38ff14] selection:text-black">
 
             {/* CRT Overlay */}
             <div className="crt-overlay fixed inset-0 pointer-events-none z-50"></div>
