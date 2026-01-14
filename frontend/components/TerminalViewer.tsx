@@ -4,9 +4,11 @@ import React, { useEffect, useRef } from 'react';
 
 interface TerminalViewerProps {
     logs?: string[];
+    bugId?: string;
 }
 
-export default function TerminalViewer({ logs = [] }: TerminalViewerProps) {
+export default function TerminalViewer({ logs: initialLogs = [], bugId }: TerminalViewerProps) {
+    const [logs, setLogs] = React.useState<string[]>(initialLogs);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom when logs change
@@ -16,7 +18,36 @@ export default function TerminalViewer({ logs = [] }: TerminalViewerProps) {
         }
     }, [logs]);
 
-    // Default demo logs if none provided
+    // WebSocket connection
+    useEffect(() => {
+        if (!bugId) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+        const ws = new WebSocket(`${protocol}//${host}/ws/logs/${bugId}`);
+
+        ws.onopen = () => {
+            setLogs(prev => [...prev, `[SYSTEM] Connected to log stream for bug: ${bugId}`]);
+        };
+
+        ws.onmessage = (event) => {
+            setLogs(prev => [...prev, event.data]);
+        };
+
+        ws.onerror = (error) => {
+            setLogs(prev => [...prev, `[ERROR] WebSocket error: ${error}`]);
+        };
+
+        ws.onclose = () => {
+            setLogs(prev => [...prev, `[SYSTEM] Disconnected from log stream`]);
+        };
+
+        return () => {
+            ws.close();
+        };
+    }, [bugId]);
+
+    // Default demo logs if none provided and no bugId
     const demoLogs = [
         "[22:04:11] SYSTEM :: Booting kernel version 4.1.2-PRIME...",
         "[22:04:11] SYSTEM :: Initializing hardware abstraction layer...",
@@ -29,7 +60,7 @@ export default function TerminalViewer({ logs = [] }: TerminalViewerProps) {
         "[22:05:01] DECRYPTING PACKETS... 74% - CRC Checksum Pending..."
     ];
 
-    const currentLogs = logs.length > 0 ? logs : demoLogs;
+    const currentLogs = logs.length > 0 ? logs : (!bugId ? demoLogs : []);
 
     return (
         <div className="flex flex-col bg-black/40 border border-[#2a3a27] rounded-xl overflow-hidden backdrop-blur-sm h-[calc(100vh-12rem)]">
