@@ -12,3 +12,6 @@ tiktoken
 # Sandbox Management (Docker SDK)
 docker
 
+
+# Database
+sqlalchemy
