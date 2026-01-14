@@ -27,7 +27,7 @@ export default function Home() {
             </div>
 
             {/* Terminal Viewer */}
-            <TerminalViewer />
+            <TerminalViewer bugId="DEMO-404" />
         </div>
     );
 }
