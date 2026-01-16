@@ -7,8 +7,10 @@ pydantic
 langchain
 langchain-openai
 langchain-core
+langchain-google-genai
 openai
 tiktoken
+google-generativeai
 
 # Sandbox Management (Docker SDK)
 docker

@@ -300,28 +300,42 @@ async def agent_health():
     Check if the agent system is operational.
     
     Returns:
-        Health status and configuration info including retry capabilities
+        Health status and configuration info including retry and AI fallback capabilities
     """
+    from core.gemini_agent import is_gemini_enabled, is_gemini_available
+    
     api_key_set = bool(os.getenv("OPENAI_API_KEY"))
+    gemini_key_set = bool(os.getenv("GEMINI_API_KEY"))
+    gemini_enabled = is_gemini_enabled()
+    gemini_available = is_gemini_available()
     
     return {
         "status": "operational",
         "agent": "Bug Exorcist",
-        "model": "gpt-4o",
+        "primary_model": "gpt-4o",
+        "fallback_model": "gemini-1.5-pro" if gemini_available else None,
         "api_key_configured": api_key_set,
+        "gemini_key_configured": gemini_key_set,
+        "gemini_fallback_enabled": gemini_enabled,
+        "gemini_fallback_available": gemini_available,
         "langchain_available": True,
         "capabilities": [
             "error_analysis",
             "code_fixing",
             "root_cause_detection",
             "automated_verification",
-            "automatic_retry_logic"  # NEW
+            "automatic_retry_logic",
+            "multi_ai_fallback"  # NEW
         ],
         "retry_config": {
             "enabled": True,
             "default_max_attempts": 3,
             "max_allowed_attempts": 5
-        }
+        },
+        "ai_fallback_chain": [
+            "gpt-4o (primary)",
+            "gemini-1.5-pro (fallback)" if gemini_available else "manual guidance (fallback)"
+        ]
     }
 
 

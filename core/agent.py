@@ -1,10 +1,12 @@
-"""
-core/agent.py - The Brain of Bug Exorcist
+"""core/agent.py - The Brain of Bug Exorcist
 
 An autonomous AI agent that analyzes runtime errors, generates fixes using GPT-4o,
 and orchestrates the entire bug fixing workflow including sandboxing and verification.
 
-Enhanced with automatic retry logic (max 3 attempts) and graceful fallback.
+Enhanced with:
+- Automatic retry logic (max 3 attempts)
+- Gemini AI fallback when GPT-4o fails
+- Graceful fallback to manual guidance
 """
 
 import asyncio
@@ -14,19 +16,21 @@ from typing import AsyncGenerator, Dict, Optional, Any, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
-# Import fallback handler
+# Import fallback handlers
 from core.fallback import get_fallback_handler
+from core.gemini_agent import GeminiFallbackAgent, is_gemini_enabled, is_gemini_available
 
 
 class BugExorcistAgent:
     """
     The autonomous Bug Exorcist agent that:
-    1. Analyzes error messages and stack traces
-    2. Generates code fixes using GPT-4o
+    1. Analyzes error messages and stack traces using GPT-4o
+    2. Generates code fixes
     3. Orchestrates Docker sandbox environments
     4. Verifies fixes before committing
     5. Automatically retries up to 3 times if a fix fails
-    6. Provides graceful fallback when all attempts fail
+    6. Falls back to Gemini AI if GPT-4o fails
+    7. Provides graceful manual guidance when all AI attempts fail
     """
 
     SYSTEM_PROMPT = """You are the Bug Exorcist, an elite autonomous AI debugging agent.
@@ -93,6 +97,15 @@ Be precise, be thorough, be the exorcist of bugs."""
         
         # Get fallback handler
         self.fallback_handler = get_fallback_handler()
+        
+        # Initialize Gemini fallback agent if enabled
+        self.gemini_agent = None
+        if is_gemini_enabled() and is_gemini_available():
+            try:
+                self.gemini_agent = GeminiFallbackAgent()
+                print(f"[AGENT] Gemini fallback agent initialized and ready")
+            except Exception as e:
+                print(f"[AGENT] Warning: Could not initialize Gemini agent: {e}")
         
         if not self.api_key:
             raise ValueError(
@@ -161,10 +174,11 @@ Be precise, be thorough, be the exorcist of bugs."""
         code_snippet: str,
         file_path: Optional[str] = None,
         additional_context: Optional[str] = None,
-        previous_attempts: Optional[List[Dict[str, Any]]] = None
+        previous_attempts: Optional[List[Dict[str, Any]]] = None,
+        use_gemini: bool = False
     ) -> Dict[str, Any]:
         """
-        Core function: Analyze an error and generate a fix using GPT-4o.
+        Core function: Analyze an error and generate a fix using AI.
         
         Args:
             error_message: The error/exception message with stack trace
@@ -172,16 +186,17 @@ Be precise, be thorough, be the exorcist of bugs."""
             file_path: Optional file path for context
             additional_context: Optional additional context about the bug
             previous_attempts: List of previous fix attempts that failed
+            use_gemini: If True, use Gemini instead of GPT-4o
             
         Returns:
-            Dictionary containing:
-                - root_cause: Analysis of what caused the bug
-                - fixed_code: The corrected code
-                - explanation: What was changed and why
-                - confidence: Confidence level (0.0-1.0)
-                - attempt_number: Which attempt this is (1-3)
+            Dictionary containing analysis results
         """
         attempt_number = len(previous_attempts) + 1 if previous_attempts else 1
+        
+        # If Gemini is requested but not available, fall back to GPT-4o
+        if use_gemini and not self.gemini_agent:
+            print("[AGENT] Gemini requested but not available, using GPT-4o")
+            use_gemini = False
         
         # Construct the analysis prompt
         user_prompt = f"""Analyze and fix this bug:
@@ -235,32 +250,73 @@ Please provide:
             user_prompt += "4. What was wrong with the previous attempt(s) and how this fix is different\n"
         
         try:
-            # Call GPT-4o via LangChain
-            messages = [
-                SystemMessage(content=self.SYSTEM_PROMPT),
-                HumanMessage(content=user_prompt)
-            ]
-            
-            response = await self.llm.agenerate([messages])
-            ai_response = response.generations[0][0].text
-            
-            # Parse the AI response
-            result = self._parse_ai_response(ai_response, code_snippet)
-            
-            return {
-                "bug_id": self.bug_id,
-                "root_cause": result["root_cause"],
-                "fixed_code": result["fixed_code"],
-                "explanation": result["explanation"],
-                "confidence": result["confidence"],
-                "original_error": error_message,
-                "timestamp": datetime.now().isoformat(),
-                "attempt_number": attempt_number,
-                "retry_analysis": result.get("retry_analysis", "")
-            }
+            if use_gemini:
+                # Use Gemini fallback agent
+                print(f"[AGENT] Using Gemini AI for analysis (attempt {attempt_number})...")
+                return await self.gemini_agent.analyze_error(
+                    error_message=error_message,
+                    code_snippet=code_snippet,
+                    file_path=file_path,
+                    additional_context=additional_context,
+                    previous_attempts=previous_attempts
+                )
+            else:
+                # Use GPT-4o
+                print(f"[AGENT] Using GPT-4o for analysis (attempt {attempt_number})...")
+                messages = [
+                    SystemMessage(content=self.SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt)
+                ]
+                
+                response = await self.llm.agenerate([messages])
+                ai_response = response.generations[0][0].text
+                
+                # Parse the AI response
+                result = self._parse_ai_response(ai_response, code_snippet)
+                
+                return {
+                    "bug_id": self.bug_id,
+                    "ai_agent": "gpt-4o",
+                    "fallback_agent": False,
+                    "root_cause": result["root_cause"],
+                    "fixed_code": result["fixed_code"],
+                    "explanation": result["explanation"],
+                    "confidence": result["confidence"],
+                    "original_error": error_message,
+                    "timestamp": datetime.now().isoformat(),
+                    "attempt_number": attempt_number,
+                    "retry_analysis": result.get("retry_analysis", "")
+                }
             
         except Exception as e:
-            # If API fails, use fallback if enabled
+            # GPT-4o failed - try Gemini if available and not already using it
+            if not use_gemini and self.gemini_agent:
+                print(f"[AGENT] ⚠️ GPT-4o failed: {str(e)}")
+                print(f"[AGENT] 🔄 Switching to Gemini AI fallback...")
+                
+                try:
+                    gemini_result = await self.gemini_agent.analyze_error(
+                        error_message=error_message,
+                        code_snippet=code_snippet,
+                        file_path=file_path,
+                        additional_context=additional_context,
+                        previous_attempts=previous_attempts,
+                        gpt_failure_context=f"GPT-4o failed with error: {str(e)}"
+                    )
+                    gemini_result['bug_id'] = self.bug_id
+                    return gemini_result
+                    
+                except Exception as gemini_error:
+                    print(f"[AGENT] ❌ Gemini also failed: {str(gemini_error)}")
+                    # Both AI systems failed - use manual fallback
+                    if self.fallback_handler.is_enabled():
+                        return self.fallback_handler.generate_api_failure_response(
+                            error_message=error_message,
+                            bug_id=self.bug_id,
+                            api_error=f"GPT-4o: {str(e)}, Gemini: {str(gemini_error)}"
+                        )
+            
+            # If API fails and no Gemini available, use fallback if enabled
             if self.fallback_handler.is_enabled():
                 return self.fallback_handler.generate_api_failure_response(
                     error_message=error_message,
@@ -273,7 +329,7 @@ Please provide:
                     "error": f"Failed to analyze error: {str(e)}",
                     "root_cause": "Analysis failed",
                     "fixed_code": code_snippet,
-                    "explanation": f"Error during GPT-4o analysis: {str(e)}",
+                    "explanation": f"Error during AI analysis: {str(e)}",
                     "confidence": 0.0,
                     "timestamp": datetime.now().isoformat(),
                     "attempt_number": attempt_number
@@ -340,11 +396,7 @@ Please provide:
             original_error: The original error for comparison
             
         Returns:
-            Dictionary with verification results including:
-                - verified: Boolean indicating if fix passed
-                - test_output: Output from the test
-                - exit_code: Exit code from test
-                - new_error: Any new error that occurred (if verification failed)
+            Dictionary with verification results
         """
         try:
             # Import sandbox here to avoid circular imports
@@ -383,14 +435,12 @@ Please provide:
         max_attempts: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Analyze and fix a bug with automatic retry logic and graceful fallback.
+        Analyze and fix a bug with automatic retry logic and AI fallback.
         
         This method will:
-        1. Attempt to fix the bug
-        2. Verify the fix in sandbox
-        3. If verification fails, retry up to MAX_RETRY_ATTEMPTS times
-        4. Each retry learns from previous failures
-        5. If all attempts fail and fallback is enabled, return structured guidance
+        1. Attempt to fix using GPT-4o (up to MAX_RETRY_ATTEMPTS)
+        2. If GPT-4o fails, switch to Gemini AI
+        3. If Gemini also fails after retries, use manual fallback
         
         Args:
             error_message: The error to fix
@@ -400,27 +450,25 @@ Please provide:
             max_attempts: Override default max attempts (default: 3)
             
         Returns:
-            Dictionary containing:
-                - success: Whether a working fix was found
-                - final_fix: The working fix result (if successful)
-                - fallback_response: Graceful fallback guidance (if failed and enabled)
-                - all_attempts: List of all attempts made
-                - total_attempts: Number of attempts made
+            Dictionary containing fix results and fallback information
         """
         max_attempts = max_attempts or self.MAX_RETRY_ATTEMPTS
         all_attempts = []
+        gpt_failed = False
+        using_gemini = False
         
         for attempt_num in range(1, max_attempts + 1):
             print(f"[AGENT] Attempt {attempt_num}/{max_attempts} - Analyzing bug...")
             
             try:
-                # Generate fix (with context from previous attempts if any)
+                # Generate fix (with Gemini if GPT-4o has failed)
                 fix_result = await self.analyze_error(
                     error_message=error_message,
                     code_snippet=code_snippet,
                     file_path=file_path,
                     additional_context=additional_context,
-                    previous_attempts=all_attempts
+                    previous_attempts=all_attempts,
+                    use_gemini=using_gemini
                 )
                 
                 # Check if this was an API failure that triggered fallback
@@ -432,10 +480,17 @@ Please provide:
                         "fallback_response": fix_result,
                         "all_attempts": all_attempts,
                         "total_attempts": attempt_num,
-                        "message": "API connection failed. Fallback guidance provided."
+                        "message": "API connection failed. Fallback guidance provided.",
+                        "ai_agents_used": ["gpt-4o" if not using_gemini else "gemini-1.5-pro"]
                     }
                 
-                print(f"[AGENT] Fix generated. Confidence: {fix_result['confidence']:.0%}")
+                # Check if Gemini was activated as fallback
+                if fix_result.get("fallback_agent"):
+                    using_gemini = True
+                    print(f"[AGENT] 🔄 Now using Gemini AI as fallback")
+                
+                ai_agent = fix_result.get("ai_agent", "unknown")
+                print(f"[AGENT] Fix generated by {ai_agent}. Confidence: {fix_result.get('confidence', 0):.0%}")
                 print(f"[AGENT] Verifying fix in sandbox...")
                 
                 # Verify the fix
@@ -447,6 +502,7 @@ Please provide:
                 # Record this attempt
                 attempt_record = {
                     "attempt_number": attempt_num,
+                    "ai_agent": ai_agent,
                     "fix_result": fix_result,
                     "verification": verification,
                     "fixed_code": fix_result['fixed_code'],
@@ -458,22 +514,31 @@ Please provide:
                 
                 # If fix is verified, we're done!
                 if verification['verified']:
-                    print(f"[AGENT] ✅ Fix verified successfully on attempt {attempt_num}!")
+                    print(f"[AGENT] ✅ Fix verified successfully on attempt {attempt_num} using {ai_agent}!")
                     return {
                         "success": True,
                         "final_fix": fix_result,
                         "final_verification": verification,
                         "all_attempts": all_attempts,
                         "total_attempts": attempt_num,
-                        "message": f"Bug fixed successfully on attempt {attempt_num}"
+                        "message": f"Bug fixed successfully on attempt {attempt_num} using {ai_agent}",
+                        "ai_agents_used": list(set([a["ai_agent"] for a in all_attempts])),
+                        "gemini_used": using_gemini
                     }
                 else:
                     print(f"[AGENT] ❌ Fix failed verification. Error: {verification.get('new_error', 'Unknown')[:100]}...")
                     
-                    # If this was the last attempt, trigger fallback if enabled
+                    # If this was the last attempt, trigger final fallback
                     if attempt_num == max_attempts:
                         print(f"[AGENT] Maximum retry attempts ({max_attempts}) reached.")
                         
+                        # Try switching to Gemini if we haven't already and it's available
+                        if not using_gemini and self.gemini_agent and attempt_num < max_attempts:
+                            print("[AGENT] 🔄 Attempting Gemini AI fallback for remaining attempts...")
+                            using_gemini = True
+                            continue
+                        
+                        # All AI attempts exhausted - use manual fallback if enabled
                         if self.fallback_handler.is_enabled():
                             print("[AGENT] Generating graceful fallback response...")
                             fallback_response = self.fallback_handler.generate_fallback_response(
@@ -490,7 +555,9 @@ Please provide:
                                 "fallback_response": fallback_response,
                                 "all_attempts": all_attempts,
                                 "total_attempts": attempt_num,
-                                "message": f"Failed to fix bug after {max_attempts} attempts. Fallback guidance provided."
+                                "message": f"Failed to fix bug after {max_attempts} attempts with multiple AI agents. Fallback guidance provided.",
+                                "ai_agents_used": list(set([a["ai_agent"] for a in all_attempts])),
+                                "gemini_used": using_gemini
                             }
                         else:
                             print("[AGENT] Fallback disabled. Returning failure.")
@@ -500,14 +567,26 @@ Please provide:
                                 "all_attempts": all_attempts,
                                 "total_attempts": attempt_num,
                                 "message": f"Failed to fix bug after {max_attempts} attempts. Manual review needed.",
-                                "last_error": verification.get('new_error')
+                                "last_error": verification.get('new_error'),
+                                "ai_agents_used": list(set([a["ai_agent"] for a in all_attempts])),
+                                "gemini_used": using_gemini
                             }
                     else:
-                        print(f"[AGENT] Retrying with improved approach...")
-                        # Continue to next iteration
+                        # Switch to Gemini if GPT-4o fails and we haven't tried Gemini yet
+                        if not using_gemini and self.gemini_agent:
+                            print(f"[AGENT] 🔄 Switching to Gemini AI for next attempt...")
+                            using_gemini = True
+                        else:
+                            print(f"[AGENT] Retrying with improved approach...")
             
             except Exception as e:
                 print(f"[AGENT] ❌ Unexpected error on attempt {attempt_num}: {str(e)}")
+                
+                # Try Gemini if not already using it
+                if not using_gemini and self.gemini_agent:
+                    print(f"[AGENT] 🔄 Switching to Gemini AI after error...")
+                    using_gemini = True
+                    continue
                 
                 # If fallback is enabled, return it
                 if self.fallback_handler.is_enabled():
@@ -522,7 +601,9 @@ Please provide:
                         "fallback_response": fallback_response,
                         "all_attempts": all_attempts,
                         "total_attempts": attempt_num,
-                        "message": f"Unexpected error: {str(e)}"
+                        "message": f"Unexpected error: {str(e)}",
+                        "ai_agents_used": list(set([a.get("ai_agent", "unknown") for a in all_attempts])),
+                        "gemini_used": using_gemini
                     }
                 else:
                     # Re-raise if fallback is disabled
@@ -534,7 +615,9 @@ Please provide:
             "final_fix": None,
             "all_attempts": all_attempts,
             "total_attempts": len(all_attempts),
-            "message": "Retry loop completed unexpectedly"
+            "message": "Retry loop completed unexpectedly",
+            "ai_agents_used": list(set([a.get("ai_agent", "unknown") for a in all_attempts])),
+            "gemini_used": using_gemini
         }
 
     async def execute_full_workflow(
@@ -565,10 +648,11 @@ Please provide:
         }
         
         if use_retry:
-            # Use the retry-enabled workflow
+            # Use the retry-enabled workflow with AI fallback
+            gemini_status = "enabled" if self.gemini_agent else "not available"
             yield {
                 "stage": "analysis",
-                "message": "Analyzing error with GPT-4o (retry logic enabled, max 3 attempts)...",
+                "message": f"Analyzing error with GPT-4o (retry logic enabled, Gemini fallback {gemini_status})...",
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -580,21 +664,25 @@ Please provide:
             
             # Yield updates for each attempt
             for attempt in retry_result['all_attempts']:
+                ai_agent = attempt.get('ai_agent', 'unknown')
                 yield {
                     "stage": f"attempt_{attempt['attempt_number']}",
-                    "message": f"Attempt {attempt['attempt_number']}: {attempt['verification_result']}",
+                    "message": f"Attempt {attempt['attempt_number']} ({ai_agent}): {attempt['verification_result']}",
                     "data": attempt,
                     "timestamp": attempt['timestamp']
                 }
             
             if retry_result['success']:
+                ai_agents_used = ", ".join(retry_result.get('ai_agents_used', ['unknown']))
                 yield {
                     "stage": "complete",
-                    "message": f"Bug successfully exorcised on attempt {retry_result['total_attempts']}!",
+                    "message": f"Bug successfully exorcised on attempt {retry_result['total_attempts']} using {ai_agents_used}!",
                     "data": {
                         "fix": retry_result['final_fix'],
                         "verification": retry_result['final_verification'],
-                        "total_attempts": retry_result['total_attempts']
+                        "total_attempts": retry_result['total_attempts'],
+                        "ai_agents_used": retry_result.get('ai_agents_used', []),
+                        "gemini_used": retry_result.get('gemini_used', False)
                     },
                     "timestamp": datetime.now().isoformat()
                 }
@@ -684,13 +772,13 @@ async def quick_fix(error: str, code: str, api_key: Optional[str] = None) -> str
 
 # Convenience function for retry-enabled fixing
 async def fix_with_retry(
-    error: str, 
-    code: str, 
+    error: str,
+    code: str,
     api_key: Optional[str] = None,
     max_attempts: int = 3
 ) -> Dict[str, Any]:
     """
-    Fix with automatic retry logic and graceful fallback.
+    Fix with automatic retry logic, AI fallback, and graceful manual guidance.
     
     Args:
         error: Error message
@@ -699,7 +787,7 @@ async def fix_with_retry(
         max_attempts: Maximum retry attempts (default: 3)
         
     Returns:
-        Dictionary with fix results, retry information, and fallback guidance if needed
+        Dictionary with fix results, retry information, AI agents used, and fallback guidance if needed
     """
     agent = BugExorcistAgent(bug_id="retry-fix", openai_api_key=api_key)
     result = await agent.analyze_and_fix_with_retry(
