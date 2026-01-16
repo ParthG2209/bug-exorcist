@@ -166,11 +166,24 @@ async def analyze_bug(request: BugAnalysisRequest, db: Session = Depends(get_db)
                 )
             else:
                 crud.update_bug_report_status(db=db, bug_report_id=bug_report.id, status="failed")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to fix bug after {retry_result['total_attempts']} attempts. "
-                           f"Last error: {retry_result.get('last_error', 'Unknown')}"
-                )
+                
+                # If fallback response is available, return it as structured error
+                if 'fallback_response' in retry_result:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=200,  # Use 200 but indicate failure in response
+                        content={
+                            "status": "analysis_failed",
+                            "fallback_provided": True,
+                            "retry_result": retry_result
+                        }
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to fix bug after {retry_result['total_attempts']} attempts. "
+                               f"Last error: {retry_result.get('last_error', 'Unknown')}"
+                    )
         else:
             # Single attempt (original behavior)
             result = await agent.analyze_error(

@@ -4,7 +4,7 @@ core/agent.py - The Brain of Bug Exorcist
 An autonomous AI agent that analyzes runtime errors, generates fixes using GPT-4o,
 and orchestrates the entire bug fixing workflow including sandboxing and verification.
 
-Enhanced with automatic retry logic for failed fixes (max 3 attempts).
+Enhanced with automatic retry logic (max 3 attempts) and graceful fallback.
 """
 
 import asyncio
@@ -13,6 +13,9 @@ from datetime import datetime
 from typing import AsyncGenerator, Dict, Optional, Any, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+
+# Import fallback handler
+from core.fallback import get_fallback_handler
 
 
 class BugExorcistAgent:
@@ -23,6 +26,7 @@ class BugExorcistAgent:
     3. Orchestrates Docker sandbox environments
     4. Verifies fixes before committing
     5. Automatically retries up to 3 times if a fix fails
+    6. Provides graceful fallback when all attempts fail
     """
 
     SYSTEM_PROMPT = """You are the Bug Exorcist, an elite autonomous AI debugging agent.
@@ -86,6 +90,9 @@ Be precise, be thorough, be the exorcist of bugs."""
         """
         self.bug_id = bug_id
         self.api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        
+        # Get fallback handler
+        self.fallback_handler = get_fallback_handler()
         
         if not self.api_key:
             raise ValueError(
@@ -253,16 +260,24 @@ Please provide:
             }
             
         except Exception as e:
-            return {
-                "bug_id": self.bug_id,
-                "error": f"Failed to analyze error: {str(e)}",
-                "root_cause": "Analysis failed",
-                "fixed_code": code_snippet,
-                "explanation": f"Error during GPT-4o analysis: {str(e)}",
-                "confidence": 0.0,
-                "timestamp": datetime.now().isoformat(),
-                "attempt_number": attempt_number
-            }
+            # If API fails, use fallback if enabled
+            if self.fallback_handler.is_enabled():
+                return self.fallback_handler.generate_api_failure_response(
+                    error_message=error_message,
+                    bug_id=self.bug_id,
+                    api_error=str(e)
+                )
+            else:
+                return {
+                    "bug_id": self.bug_id,
+                    "error": f"Failed to analyze error: {str(e)}",
+                    "root_cause": "Analysis failed",
+                    "fixed_code": code_snippet,
+                    "explanation": f"Error during GPT-4o analysis: {str(e)}",
+                    "confidence": 0.0,
+                    "timestamp": datetime.now().isoformat(),
+                    "attempt_number": attempt_number
+                }
 
     def _parse_ai_response(self, ai_response: str, original_code: str) -> Dict[str, Any]:
         """
@@ -368,13 +383,14 @@ Please provide:
         max_attempts: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Analyze and fix a bug with automatic retry logic.
+        Analyze and fix a bug with automatic retry logic and graceful fallback.
         
         This method will:
         1. Attempt to fix the bug
         2. Verify the fix in sandbox
         3. If verification fails, retry up to MAX_RETRY_ATTEMPTS times
         4. Each retry learns from previous failures
+        5. If all attempts fail and fallback is enabled, return structured guidance
         
         Args:
             error_message: The error to fix
@@ -387,6 +403,7 @@ Please provide:
             Dictionary containing:
                 - success: Whether a working fix was found
                 - final_fix: The working fix result (if successful)
+                - fallback_response: Graceful fallback guidance (if failed and enabled)
                 - all_attempts: List of all attempts made
                 - total_attempts: Number of attempts made
         """
@@ -396,64 +413,120 @@ Please provide:
         for attempt_num in range(1, max_attempts + 1):
             print(f"[AGENT] Attempt {attempt_num}/{max_attempts} - Analyzing bug...")
             
-            # Generate fix (with context from previous attempts if any)
-            fix_result = await self.analyze_error(
-                error_message=error_message,
-                code_snippet=code_snippet,
-                file_path=file_path,
-                additional_context=additional_context,
-                previous_attempts=all_attempts
-            )
-            
-            print(f"[AGENT] Fix generated. Confidence: {fix_result['confidence']:.0%}")
-            print(f"[AGENT] Verifying fix in sandbox...")
-            
-            # Verify the fix
-            verification = await self.verify_fix(
-                fixed_code=fix_result['fixed_code'],
-                original_error=error_message
-            )
-            
-            # Record this attempt
-            attempt_record = {
-                "attempt_number": attempt_num,
-                "fix_result": fix_result,
-                "verification": verification,
-                "fixed_code": fix_result['fixed_code'],
-                "verification_result": "PASSED" if verification['verified'] else "FAILED",
-                "new_error": verification.get('new_error'),
-                "timestamp": datetime.now().isoformat()
-            }
-            all_attempts.append(attempt_record)
-            
-            # If fix is verified, we're done!
-            if verification['verified']:
-                print(f"[AGENT] ✅ Fix verified successfully on attempt {attempt_num}!")
-                return {
-                    "success": True,
-                    "final_fix": fix_result,
-                    "final_verification": verification,
-                    "all_attempts": all_attempts,
-                    "total_attempts": attempt_num,
-                    "message": f"Bug fixed successfully on attempt {attempt_num}"
-                }
-            else:
-                print(f"[AGENT] ❌ Fix failed verification. Error: {verification.get('new_error', 'Unknown')[:100]}...")
+            try:
+                # Generate fix (with context from previous attempts if any)
+                fix_result = await self.analyze_error(
+                    error_message=error_message,
+                    code_snippet=code_snippet,
+                    file_path=file_path,
+                    additional_context=additional_context,
+                    previous_attempts=all_attempts
+                )
                 
-                # If this was the last attempt, return failure
-                if attempt_num == max_attempts:
-                    print(f"[AGENT] Maximum retry attempts ({max_attempts}) reached. Manual intervention required.")
+                # Check if this was an API failure that triggered fallback
+                if fix_result.get("status") == "api_connection_failed":
+                    print(f"[AGENT] ❌ API connection failed. Returning fallback response.")
                     return {
                         "success": False,
                         "final_fix": None,
+                        "fallback_response": fix_result,
                         "all_attempts": all_attempts,
                         "total_attempts": attempt_num,
-                        "message": f"Failed to fix bug after {max_attempts} attempts. Manual review needed.",
-                        "last_error": verification.get('new_error')
+                        "message": "API connection failed. Fallback guidance provided."
+                    }
+                
+                print(f"[AGENT] Fix generated. Confidence: {fix_result['confidence']:.0%}")
+                print(f"[AGENT] Verifying fix in sandbox...")
+                
+                # Verify the fix
+                verification = await self.verify_fix(
+                    fixed_code=fix_result['fixed_code'],
+                    original_error=error_message
+                )
+                
+                # Record this attempt
+                attempt_record = {
+                    "attempt_number": attempt_num,
+                    "fix_result": fix_result,
+                    "verification": verification,
+                    "fixed_code": fix_result['fixed_code'],
+                    "verification_result": "PASSED" if verification['verified'] else "FAILED",
+                    "new_error": verification.get('new_error'),
+                    "timestamp": datetime.now().isoformat()
+                }
+                all_attempts.append(attempt_record)
+                
+                # If fix is verified, we're done!
+                if verification['verified']:
+                    print(f"[AGENT] ✅ Fix verified successfully on attempt {attempt_num}!")
+                    return {
+                        "success": True,
+                        "final_fix": fix_result,
+                        "final_verification": verification,
+                        "all_attempts": all_attempts,
+                        "total_attempts": attempt_num,
+                        "message": f"Bug fixed successfully on attempt {attempt_num}"
                     }
                 else:
-                    print(f"[AGENT] Retrying with improved approach...")
-                    # Continue to next iteration
+                    print(f"[AGENT] ❌ Fix failed verification. Error: {verification.get('new_error', 'Unknown')[:100]}...")
+                    
+                    # If this was the last attempt, trigger fallback if enabled
+                    if attempt_num == max_attempts:
+                        print(f"[AGENT] Maximum retry attempts ({max_attempts}) reached.")
+                        
+                        if self.fallback_handler.is_enabled():
+                            print("[AGENT] Generating graceful fallback response...")
+                            fallback_response = self.fallback_handler.generate_fallback_response(
+                                error_message=error_message,
+                                code_snippet=code_snippet,
+                                bug_id=self.bug_id,
+                                total_attempts=attempt_num,
+                                all_attempts=all_attempts
+                            )
+                            
+                            return {
+                                "success": False,
+                                "final_fix": None,
+                                "fallback_response": fallback_response,
+                                "all_attempts": all_attempts,
+                                "total_attempts": attempt_num,
+                                "message": f"Failed to fix bug after {max_attempts} attempts. Fallback guidance provided."
+                            }
+                        else:
+                            print("[AGENT] Fallback disabled. Returning failure.")
+                            return {
+                                "success": False,
+                                "final_fix": None,
+                                "all_attempts": all_attempts,
+                                "total_attempts": attempt_num,
+                                "message": f"Failed to fix bug after {max_attempts} attempts. Manual review needed.",
+                                "last_error": verification.get('new_error')
+                            }
+                    else:
+                        print(f"[AGENT] Retrying with improved approach...")
+                        # Continue to next iteration
+            
+            except Exception as e:
+                print(f"[AGENT] ❌ Unexpected error on attempt {attempt_num}: {str(e)}")
+                
+                # If fallback is enabled, return it
+                if self.fallback_handler.is_enabled():
+                    fallback_response = self.fallback_handler.generate_api_failure_response(
+                        error_message=error_message,
+                        bug_id=self.bug_id,
+                        api_error=str(e)
+                    )
+                    return {
+                        "success": False,
+                        "final_fix": None,
+                        "fallback_response": fallback_response,
+                        "all_attempts": all_attempts,
+                        "total_attempts": attempt_num,
+                        "message": f"Unexpected error: {str(e)}"
+                    }
+                else:
+                    # Re-raise if fallback is disabled
+                    raise
         
         # This shouldn't be reached, but just in case
         return {
@@ -526,12 +599,21 @@ Please provide:
                     "timestamp": datetime.now().isoformat()
                 }
             else:
-                yield {
-                    "stage": "failed",
-                    "message": f"Failed after {retry_result['total_attempts']} attempts. {retry_result['message']}",
-                    "data": retry_result,
-                    "timestamp": datetime.now().isoformat()
-                }
+                # Check if fallback was provided
+                if 'fallback_response' in retry_result:
+                    yield {
+                        "stage": "fallback",
+                        "message": f"AI analysis failed. Providing manual debugging guidance.",
+                        "data": retry_result['fallback_response'],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                else:
+                    yield {
+                        "stage": "failed",
+                        "message": f"Failed after {retry_result['total_attempts']} attempts. {retry_result['message']}",
+                        "data": retry_result,
+                        "timestamp": datetime.now().isoformat()
+                    }
         else:
             # Original single-attempt workflow
             yield {
@@ -608,7 +690,7 @@ async def fix_with_retry(
     max_attempts: int = 3
 ) -> Dict[str, Any]:
     """
-    Fix with automatic retry logic.
+    Fix with automatic retry logic and graceful fallback.
     
     Args:
         error: Error message
@@ -617,7 +699,7 @@ async def fix_with_retry(
         max_attempts: Maximum retry attempts (default: 3)
         
     Returns:
-        Dictionary with fix results and retry information
+        Dictionary with fix results, retry information, and fallback guidance if needed
     """
     agent = BugExorcistAgent(bug_id="retry-fix", openai_api_key=api_key)
     result = await agent.analyze_and_fix_with_retry(
