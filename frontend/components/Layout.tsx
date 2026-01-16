@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import AIStatusIndicator from './AIStatusIndicator';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -118,6 +119,9 @@ export default function Layout({ children }: LayoutProps) {
                                 {isSidebarOpen ? 'menu_open' : 'menu'}
                             </span>
                         </button>
+                        
+                        {/* AI Status Indicator */}
+                        <AIStatusIndicator />
                         
                         {/* Search Input (Expandable) */}
                         <div className={`flex items-center gap-2 transition-all duration-300 ${isSearchOpen ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
