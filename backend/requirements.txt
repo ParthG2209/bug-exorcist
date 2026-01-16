@@ -3,18 +3,21 @@ fastapi
 uvicorn[standard]
 pydantic
 
-# AI & LLM 
+# AI & LLM - Updated for LangChain v0.1+
 langchain
 langchain-openai
+langchain-core
 openai
 tiktoken
 
 # Sandbox Management (Docker SDK)
 docker
 
-
 # Database
 sqlalchemy
 
 # Version Control
 GitPython
+
+# Additional utilities
+python-dotenv
